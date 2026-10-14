@@ -18,11 +18,15 @@ on:
         required: false
         default: '9663676416'
         type: string
-      split_archive:
-        description: 'Nén chia nhỏ file output (1.9GB mỗi part)'
+      upload_target:
+        description: 'Nơi lưu trữ file ROM'
         required: false
-        default: true
-        type: boolean
+        default: 'gofile'
+        type: choice
+        options:
+          - 'gofile'
+          - 'github_release'
+          - 'both'
 
   repository_dispatch:
     types: [build_rom]
@@ -34,19 +38,19 @@ jobs:
       contents: write
 
     steps:
-      - name: Phân giải tham số (Workflow Dispatch hoặc Telegram)
+      - name: Phân giải tham số
         id: params
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "rom_url=${{ github.event.client_payload.rom_url }}" >> $GITHUB_OUTPUT
             echo "device_name=${{ github.event.client_payload.device_name || 'vermeer' }}" >> $GITHUB_OUTPUT
             echo "super_size=${{ github.event.client_payload.super_size || '9663676416' }}" >> $GITHUB_OUTPUT
-            echo "split_archive=${{ github.event.client_payload.split_archive || 'true' }}" >> $GITHUB_OUTPUT
+            echo "upload_target=${{ github.event.client_payload.upload_target || 'gofile' }}" >> $GITHUB_OUTPUT
           else
             echo "rom_url=${{ inputs.rom_url }}" >> $GITHUB_OUTPUT
             echo "device_name=${{ inputs.device_name }}" >> $GITHUB_OUTPUT
             echo "super_size=${{ inputs.super_size }}" >> $GITHUB_OUTPUT
-            echo "split_archive=${{ inputs.split_archive }}" >> $GITHUB_OUTPUT
+            echo "upload_target=${{ inputs.upload_target }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Gửi thông báo bắt đầu qua Telegram
@@ -55,7 +59,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE="🚀 <b>Bắt đầu tiến trình Build ROM!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>URL Nguồn:</b> ${{ steps.params.outputs.rom_url }}%0A💾 <b>Super Size:</b> <code>${{ steps.params.outputs.super_size }}</code> bytes%0A⚡ <b>Job ID:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Theo dõi tiến trình trực tiếp</a>"
+          MESSAGE="🚀 <b>Bắt đầu tiến trình Build ROM!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>URL Nguồn:</b> ${{ steps.params.outputs.rom_url }}%0A💾 <b>Super Size:</b> <code>${{ steps.params.outputs.super_size }}</code> bytes%0A☁️ <b>Nơi lưu trữ:</b> <code>${{ steps.params.outputs.upload_target }}</code>%0A⚡ <b>Job ID:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Theo dõi trực tiếp</a>"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
 
@@ -78,7 +82,7 @@ jobs:
       - name: Cài đặt công cụ và dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 p7zip-full curl wget python3
+          sudo apt-get install -y aria2 p7zip-full curl wget python3 jq
 
           # Cài đặt payload-dumper-go
           echo "Cài đặt payload-dumper-go..."
@@ -117,7 +121,7 @@ jobs:
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=🗜️ <b>Đang nén chia nhỏ bản ROM (1.9GB/part)...</b>" || true
+              -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=🗜️ <b>Đang đóng gói file nén Fastboot ROM...</b>" || true
           fi
 
           cd fastboot_rom_output
@@ -126,17 +130,59 @@ jobs:
           echo "rom_tag=$ROM_TAG" >> $GITHUB_OUTPUT
 
           mkdir -p ../dist
-          if [ "${{ steps.params.outputs.split_archive }}" = "true" ]; then
-            7z a -v1900m "../dist/${ROM_TAG}.7z" ./*
-          else
-            7z a "../dist/${ROM_TAG}.zip" ./*
-          fi
+          
+          # Nén 1 file 7z duy nhất cho GoFile / Cloud
+          echo "Đang nén 1 file duy nhất..."
+          7z a -mx=1 "../dist/${ROM_TAG}.7z" ./*
+          
+          echo "rom_file_path=dist/${ROM_TAG}.7z" >> $GITHUB_OUTPUT
+          echo "rom_file_name=${ROM_TAG}.7z" >> $GITHUB_OUTPUT
 
-          echo "Danh sách file đã đóng gói:"
           ls -lh ../dist/
 
-      - name: Tạo GitHub Release và Upload ROM
+      # ---------------- UPLOAD LÊN GOFILE.IO ----------------
+      - name: Upload lên GoFile.io
+        id: upload_gofile
+        if: steps.params.outputs.upload_target == 'gofile' || steps.params.outputs.upload_target == 'both'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=☁️ <b>Đang tải ROM lên GoFile.io (Tốc độ cao)...</b>" || true
+          fi
+
+          FILE_PATH="${{ steps.package.outputs.rom_file_path }}"
+          echo "Đang tìm máy chủ GoFile tốt nhất..."
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name // "store1"')
+          echo "Server: $SERVER"
+
+          echo "Bắt đầu upload $FILE_PATH ..."
+          RESPONSE=$(curl -F "file=@$FILE_PATH" "https://${SERVER}.gofile.io/contents/uploadfile")
+          echo "Response: $RESPONSE"
+
+          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage // empty')
+          
+          if [ -z "$DOWNLOAD_PAGE" ]; then
+            echo "Thử lại qua cổng upload chung..."
+            RESPONSE=$(curl -F "file=@$FILE_PATH" "https://upload.gofile.io/uploadfile")
+            DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage // empty')
+          fi
+
+          echo "gofile_url=$DOWNLOAD_PAGE" >> $GITHUB_OUTPUT
+          echo "GoFile URL: $DOWNLOAD_PAGE"
+
+      # ---------------- UPLOAD LÊN GITHUB RELEASE ----------------
+      - name: Đóng gói chia nhỏ cho GitHub Release (Nếu chọn)
+        if: steps.params.outputs.upload_target == 'github_release' || steps.params.outputs.upload_target == 'both'
+        run: |
+          mkdir -p dist_release
+          7z a -v1900m "dist_release/${{ steps.package.outputs.rom_tag }}.7z" ./fastboot_rom_output/*
+
+      - name: Tạo GitHub Release
         id: create_release
+        if: steps.params.outputs.upload_target == 'github_release' || steps.params.outputs.upload_target == 'both'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.package.outputs.rom_tag }}
@@ -145,25 +191,28 @@ jobs:
             ## Fastboot ROM Build Thành Công 🚀
             - **Thiết bị:** `${{ steps.params.outputs.device_name }}`
             - **URL Nguồn:** `${{ steps.params.outputs.rom_url }}`
-            - **Super Size:** `${{ steps.params.outputs.super_size }}`
-            
-            ### Hướng dẫn Flash:
-            1. Tải toàn bộ các file `.7z.001`, `.7z.002`... về chung một thư mục.
-            2. Dùng 7-Zip (hoặc WinRAR) giải nén file `.7z.001`.
-            3. Đưa điện thoại về chế độ Fastboot (`fastboot devices`).
-            4. Chạy `flash_all.bat` (trên Windows) hoặc `./flash_all.sh` (trên Linux).
-          files: dist/*
+          files: dist_release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---------------- THÔNG BÁO HOÀN TẤT VỀ TELEGRAM ----------------
       - name: Gửi thông báo hoàn tất qua Telegram
         if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.package.outputs.rom_tag }}"
-          MESSAGE="🎉 <b>Build ROM Hoàn Tất 100%!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Bản phát hành:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải các file ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải ngay</a>"
+          MESSAGE="🎉 <b>Build ROM Hoàn Tất 100%!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Tệp nén:</b> <code>${{ steps.package.outputs.rom_file_name }}</code>%0A"
+
+          if [ -n "${{ steps.upload_gofile.outputs.gofile_url }}" ]; then
+            MESSAGE="${MESSAGE}%0A⚡ <b>Link tải GoFile (1 file duy nhất, Max speed):</b>%0A👉 <a href=\"${{ steps.upload_gofile.outputs.gofile_url }}\">${{ steps.upload_gofile.outputs.gofile_url }}</a>%0A"
+          fi
+
+          if [ "${{ steps.params.outputs.upload_target }}" != "gofile" ]; then
+            RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.package.outputs.rom_tag }}"
+            MESSAGE="${MESSAGE}%0A🐙 <b>Link GitHub Releases:</b>%0A<a href=\"${RELEASE_URL}\">${RELEASE_URL}</a>%0A"
+          fi
+
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
 
