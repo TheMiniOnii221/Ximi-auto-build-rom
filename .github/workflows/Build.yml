@@ -55,7 +55,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE="🚀 <b>Bắt đầu tiến trình Build ROM!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>URL:</b> ${{ steps.params.outputs.rom_url }}%0A⚡ <b>Job ID:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Xem tiến trình</a>"
+          MESSAGE="🚀 <b>Bắt đầu tiến trình Build ROM!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>URL Nguồn:</b> ${{ steps.params.outputs.rom_url }}%0A💾 <b>Super Size:</b> <code>${{ steps.params.outputs.super_size }}</code> bytes%0A⚡ <b>Job ID:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Theo dõi tiến trình trực tiếp</a>"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
 
@@ -102,13 +102,24 @@ jobs:
           lpmake --help || true
 
       - name: Chạy script Build ROM
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           chmod +x ./build_rom.sh
           ./build_rom.sh "${{ steps.params.outputs.rom_url }}" "${{ steps.params.outputs.device_name }}" "${{ steps.params.outputs.super_size }}"
 
       - name: Đóng gói sản phẩm Fastboot ROM
         id: package
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=🗜️ <b>Đang nén chia nhỏ bản ROM (1.9GB/part)...</b>" || true
+          fi
+
           cd fastboot_rom_output
           DATE_STR=$(date +'%Y%m%d_%H%M%S')
           ROM_TAG="${{ steps.params.outputs.device_name }}_fastboot_${DATE_STR}"
@@ -116,10 +127,8 @@ jobs:
 
           mkdir -p ../dist
           if [ "${{ steps.params.outputs.split_archive }}" = "true" ]; then
-            echo "Đang nén phân đoạn 1.9GB..."
             7z a -v1900m "../dist/${ROM_TAG}.7z" ./*
           else
-            echo "Đang nén ZIP..."
             7z a "../dist/${ROM_TAG}.zip" ./*
           fi
 
@@ -147,14 +156,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Gửi thông báo thành công qua Telegram
+      - name: Gửi thông báo hoàn tất qua Telegram
         if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.package.outputs.rom_tag }}"
-          MESSAGE="✅ <b>Build ROM Hoàn Tất!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Tag:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải bản ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải ROM</a>"
+          MESSAGE="🎉 <b>Build ROM Hoàn Tất 100%!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Bản phát hành:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải các file ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải ngay</a>"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
 
