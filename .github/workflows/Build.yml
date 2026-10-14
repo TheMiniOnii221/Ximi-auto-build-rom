@@ -87,11 +87,15 @@ jobs:
           sudo mv payload-dumper-go /usr/local/bin/
           rm -f payload-dumper-go*
 
-          # Cài đặt lpmake
-          echo "Cài đặt lpmake..."
-          wget -q https://github.com/cfig/Android_build_tools/raw/master/bin/lpmake -O lpmake
+          # Cài đặt lpmake & lpunpack từ AOSP 15 prebuilts
+          echo "Cài đặt lpmake & lpunpack..."
+          wget -q https://raw.githubusercontent.com/Rprop/aosp15_partition_tools/main/linux_glibc_x86_64/lpmake -O lpmake
           chmod +x lpmake
           sudo mv lpmake /usr/local/bin/
+
+          wget -q https://raw.githubusercontent.com/Rprop/aosp15_partition_tools/main/linux_glibc_x86_64/lpunpack -O lpunpack
+          chmod +x lpunpack
+          sudo mv lpunpack /usr/local/bin/
 
           # Kiểm tra các công cụ
           payload-dumper-go -h || true
