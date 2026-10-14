@@ -1,0 +1,148 @@
+name: Xiaomi ROM Builder (Payload to Super)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rom_url:
+        description: 'Đường dẫn tải ROM (ZIP Recovery hoặc link trực tiếp payload.bin)'
+        required: true
+        type: string
+      device_name:
+        description: 'Tên mã thiết bị (Codename)'
+        required: false
+        default: 'vermeer'
+        type: string
+      super_size:
+        description: 'Kích thước Super Partition tính bằng bytes (Để 0 để tự động tính)'
+        required: false
+        default: '9663676416'
+        type: string
+      split_archive:
+        description: 'Nén chia nhỏ file output (2GB mỗi part)'
+        required: false
+        default: true
+        type: boolean
+
+  repository_dispatch:
+    types: [build_rom]
+
+jobs:
+  build-rom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Phân giải tham số (Workflow Dispatch hoặc Telegram)
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "rom_url=${{ github.event.client_payload.rom_url }}" >> $GITHUB_OUTPUT
+            echo "device_name=${{ github.event.client_payload.device_name || 'vermeer' }}" >> $GITHUB_OUTPUT
+            echo "super_size=${{ github.event.client_payload.super_size || '9663676416' }}" >> $GITHUB_OUTPUT
+            echo "split_archive=${{ github.event.client_payload.split_archive || 'true' }}" >> $GITHUB_OUTPUT
+          else
+            echo "rom_url=${{ inputs.rom_url }}" >> $GITHUB_OUTPUT
+            echo "device_name=${{ inputs.device_name }}" >> $GITHUB_OUTPUT
+            echo "super_size=${{ inputs.super_size }}" >> $GITHUB_OUTPUT
+            echo "split_archive=${{ inputs.split_archive }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gửi thông báo bắt đầu qua Telegram
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="🚀 <b>Bắt đầu tiến trình Build ROM!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>URL:</b> ${{ steps.params.outputs.rom_url }}%0A⚡ <b>Job ID:</b> <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Xem tiến trình</a>"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space (Giải phóng dung lượng ổ đĩa)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+          df -h
+
+      - name: Cài đặt công cụ và dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 p7zip-full curl wget python3
+
+          # Cài đặt payload-dumper-go
+          wget -q https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz
+          tar -xvf payload-dumper-go_1.2.2_linux_amd64.tar.gz
+          sudo mv payload-dumper-go /usr/local/bin/
+          rm -f payload-dumper-go*
+
+          # Cài đặt lpmake
+          wget -q https://github.com/cfig/Android_build_tools/raw/master/bin/lpmake -O lpmake
+          chmod +x lpmake
+          sudo mv lpmake /usr/local/bin/
+
+      - name: Chạy script Build ROM
+        run: |
+          chmod +x ./build_rom.sh
+          ./build_rom.sh "${{ steps.params.outputs.rom_url }}" "${{ steps.params.outputs.device_name }}" "${{ steps.params.outputs.super_size }}"
+
+      - name: Đóng gói sản phẩm Fastboot ROM
+        id: package
+        run: |
+          cd fastboot_rom_output
+          DATE_STR=$(date +'%Y%m%d_%H%M%S')
+          ROM_TAG="${{ steps.params.outputs.device_name }}_fastboot_${DATE_STR}"
+          echo "rom_tag=$ROM_TAG" >> $GITHUB_OUTPUT
+
+          mkdir -p ../dist
+          if [ "${{ steps.params.outputs.split_archive }}" = "true" ]; then
+            echo "Đang nén phân đoạn 1.9GB..."
+            7z a -v1900m "../dist/${ROM_TAG}.7z" ./*
+          else
+            echo "Đang nén ZIP..."
+            7z a "../dist/${ROM_TAG}.zip" ./*
+          fi
+
+      - name: Tạo GitHub Release và Upload ROM
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package.outputs.rom_tag }}
+          name: "Fastboot ROM: ${{ steps.params.outputs.device_name }} - $(date +'%d/%m/%Y')"
+          body: |
+            ## Fastboot ROM Build Thành Công 🚀
+            - **Thiết bị:** `${{ steps.params.outputs.device_name }}`
+            - **URL Nguồn:** `${{ steps.params.outputs.rom_url }}`
+            - **Super Size:** `${{ steps.params.outputs.super_size }}`
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gửi thông báo thành công qua Telegram
+        if: success() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.package.outputs.rom_tag }}"
+          MESSAGE="✅ <b>Build ROM Hoàn Tất!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Tag:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải bản ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải các file ROM</a>"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
+
+      - name: Gửi thông báo thất bại qua Telegram
+        if: failure() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          LOG_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="❌ <b>Build ROM Thất Bại!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>Log lỗi:</b> <a href=\"${LOG_URL}\">Xem chi tiết lỗi tại đây</a>"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
+            
