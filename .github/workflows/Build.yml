@@ -3,8 +3,8 @@ name: Xiaomi ROM Builder (Payload to Super)
 on:
   workflow_dispatch:
     inputs:
-      rom_url: https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.307.0.WNKCNXM/vermeer-ota_full-OS3.0.307.0.WNKCNXM-user-16.0-e8ac729fa5.zip
-        description: 'Đường dẫn tải ROM (ZIP Recovery hoặc link trực tiếp payload.bin)'
+      rom_url: 'https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.307.0.WNKCNXM/vermeer-ota_full-OS3.0.307.0.WNKCNXM-user-16.0-e8ac729fa5.zip'
+      description: 'Đường dẫn tải ROM (ZIP Recovery hoặc link trực tiếp payload.bin)'
         required: true
         type: string
       device_name:
