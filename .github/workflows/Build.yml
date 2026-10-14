@@ -3,9 +3,10 @@ name: Xiaomi ROM Builder (Payload to Super)
 on:
   workflow_dispatch:
     inputs:
-      rom_url: 'https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.307.0.WNKCNXM/vermeer-ota_full-OS3.0.307.0.WNKCNXM-user-16.0-e8ac729fa5.zip'
-      description: 'Đường dẫn tải ROM (ZIP Recovery hoặc link trực tiếp payload.bin)'
+      rom_url:
+        description: 'Đường dẫn tải ROM (ZIP Recovery hoặc link trực tiếp payload.bin)'
         required: true
+        default: 'https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.307.0.WNKCNXM/vermeer-ota_full-OS3.0.307.0.WNKCNXM-user-16.0-e8ac729fa5.zip'
         type: string
       device_name:
         description: 'Tên mã thiết bị (Codename)'
@@ -18,7 +19,7 @@ on:
         default: '9663676416'
         type: string
       split_archive:
-        description: 'Nén chia nhỏ file output (2GB mỗi part)'
+        description: 'Nén chia nhỏ file output (1.9GB mỗi part)'
         required: false
         default: true
         type: boolean
@@ -63,12 +64,15 @@ jobs:
 
       - name: Free Disk Space (Giải phóng dung lượng ổ đĩa)
         run: |
+          echo "Dung lượng đĩa trước khi dọn dẹp:"
+          df -h
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           sudo docker image prune -a -f || true
           sudo apt-get clean
+          echo "Dung lượng đĩa sau khi dọn dẹp:"
           df -h
 
       - name: Cài đặt công cụ và dependencies
@@ -77,15 +81,21 @@ jobs:
           sudo apt-get install -y aria2 p7zip-full curl wget python3
 
           # Cài đặt payload-dumper-go
+          echo "Cài đặt payload-dumper-go..."
           wget -q https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz
           tar -xvf payload-dumper-go_1.2.2_linux_amd64.tar.gz
           sudo mv payload-dumper-go /usr/local/bin/
           rm -f payload-dumper-go*
 
           # Cài đặt lpmake
+          echo "Cài đặt lpmake..."
           wget -q https://github.com/cfig/Android_build_tools/raw/master/bin/lpmake -O lpmake
           chmod +x lpmake
           sudo mv lpmake /usr/local/bin/
+
+          # Kiểm tra các công cụ
+          payload-dumper-go -h || true
+          lpmake --help || true
 
       - name: Chạy script Build ROM
         run: |
@@ -109,6 +119,9 @@ jobs:
             7z a "../dist/${ROM_TAG}.zip" ./*
           fi
 
+          echo "Danh sách file đã đóng gói:"
+          ls -lh ../dist/
+
       - name: Tạo GitHub Release và Upload ROM
         id: create_release
         uses: softprops/action-gh-release@v2
@@ -120,6 +133,12 @@ jobs:
             - **Thiết bị:** `${{ steps.params.outputs.device_name }}`
             - **URL Nguồn:** `${{ steps.params.outputs.rom_url }}`
             - **Super Size:** `${{ steps.params.outputs.super_size }}`
+            
+            ### Hướng dẫn Flash:
+            1. Tải toàn bộ các file `.7z.001`, `.7z.002`... về chung một thư mục.
+            2. Dùng 7-Zip (hoặc WinRAR) giải nén file `.7z.001`.
+            3. Đưa điện thoại về chế độ Fastboot (`fastboot devices`).
+            4. Chạy `flash_all.bat` (trên Windows) hoặc `./flash_all.sh` (trên Linux).
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,7 +150,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.package.outputs.rom_tag }}"
-          MESSAGE="✅ <b>Build ROM Hoàn Tất!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Tag:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải bản ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải các file ROM</a>"
+          MESSAGE="✅ <b>Build ROM Hoàn Tất!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A📦 <b>Tag:</b> <code>${{ steps.package.outputs.rom_tag }}</code>%0A%0A⬇️ <b>Link tải bản ROM:</b>%0A<a href=\"${RELEASE_URL}\">Bấm vào đây để tải ROM</a>"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
 
@@ -145,4 +164,3 @@ jobs:
           MESSAGE="❌ <b>Build ROM Thất Bại!</b>%0A%0A📱 <b>Thiết bị:</b> <code>${{ steps.params.outputs.device_name }}</code>%0A🔗 <b>Log lỗi:</b> <a href=\"${LOG_URL}\">Xem chi tiết lỗi tại đây</a>"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${MESSAGE}" || true
-            
