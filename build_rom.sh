@@ -15,7 +15,20 @@ NC='\033[0m'
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+log_error() { 
+    echo -e "${RED}[ERROR]${NC} $1";
+    tg_notify "❌ <b>Lỗi trong quá trình build:</b>%0A<code>$1</code>"
+    exit 1; 
+}
+
+# Hàm gửi thông báo Telegram
+tg_notify() {
+    if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+        local msg="$1"
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}&parse_mode=HTML&text=${msg}" >/dev/null 2>&1 || true
+    fi
+}
 
 # Default arguments
 ROM_URL="${1:-}"
@@ -49,6 +62,8 @@ DOWNLOAD_TARGET="$WORK_DIR/$ROM_FILENAME"
 
 if [ ! -f "$DOWNLOAD_TARGET" ]; then
     log_info "Đang tải ROM: $ROM_URL ..."
+    tg_notify "📥 <b>[Bước 1/5] Đang tải ROM từ máy chủ...</b>%0A📱 <b>Thiết bị:</b> <code>$DEVICE_NAME</code>%0A📁 <b>Tệp:</b> <code>$ROM_FILENAME</code>"
+    
     if command -v aria2c >/dev/null 2>&1; then
         aria2c -x16 -s16 -j4 -c --summary-interval=10 -d "$WORK_DIR" -o "$ROM_FILENAME" "$ROM_URL" || \
         curl -L -C - -o "$DOWNLOAD_TARGET" "$ROM_URL"
@@ -59,6 +74,9 @@ else
     log_info "File ROM đã tồn tại: $DOWNLOAD_TARGET. Bỏ qua bước tải."
 fi
 
+FILE_SIZE_HR=$(ls -lh "$DOWNLOAD_TARGET" | awk '{print $5}')
+log_success "Đã có file ROM ($FILE_SIZE_HR)!"
+
 # 2. Xác định và giải nén payload.bin
 EXTRACTED_DIR="$WORK_DIR/extracted_images"
 mkdir -p "$EXTRACTED_DIR"
@@ -68,6 +86,8 @@ if [[ "$DOWNLOAD_TARGET" == *.bin ]]; then
     PAYLOAD_FILE="$DOWNLOAD_TARGET"
 else
     log_info "Đang tìm payload.bin từ file zip..."
+    tg_notify "📦 <b>[Bước 2/5] Đã tải ROM ($FILE_SIZE_HR).</b>%0AĐang giải nén <code>payload.bin</code> từ file ZIP..."
+    
     if command -v 7z >/dev/null 2>&1; then
         7z e -y -o"$WORK_DIR" "$DOWNLOAD_TARGET" "payload.bin" >/dev/null || true
     elif command -v unzip >/dev/null 2>&1; then
@@ -83,6 +103,8 @@ fi
 
 # 3. Trích xuất partition images từ payload.bin
 log_info "Đang extract các partition images bằng payload-dumper-go..."
+tg_notify "📂 <b>[Bước 3/5] Đang trích xuất các phân vùng (.img)</b> từ payload.bin..."
+
 if ! command -v payload-dumper-go >/dev/null 2>&1; then
     log_error "Không tìm thấy công cụ 'payload-dumper-go' trong PATH!"
 fi
@@ -127,19 +149,27 @@ done
 
 # 5. Đóng gói super.img bằng lpmake
 log_info "Tính toán dung lượng super partition..."
-# Căn chỉnh kích thước (4KB alignment) và cộng thêm 512MB dự phòng
-GROUP_SIZE=$(( ((TOTAL_DYNAMIC_SIZE + 536870912 + 4095) / 4096) * 4096 ))
 
-if [ "$CUSTOM_SUPER_SIZE" -gt 0 ] && [ "$CUSTOM_SUPER_SIZE" -ge "$GROUP_SIZE" ]; then
+if [ "$CUSTOM_SUPER_SIZE" -gt 0 ]; then
     SUPER_SIZE="$CUSTOM_SUPER_SIZE"
+    GROUP_SIZE="$CUSTOM_SUPER_SIZE"
+    log_info "Sử dụng super size chỉ định: $SUPER_SIZE bytes"
 else
-    # Super size = group size + 20MB overhead metadata
+    # Tự động tính: tổng size dynamic + 100MB dự phòng (align 4KB)
+    GROUP_SIZE=$(( ((TOTAL_DYNAMIC_SIZE + 104857600 + 4095) / 4096) * 4096 ))
     SUPER_SIZE=$(( GROUP_SIZE + 20971520 ))
+    log_info "Tự động tính super size: $SUPER_SIZE bytes"
+fi
+
+if [ "$TOTAL_DYNAMIC_SIZE" -gt "$GROUP_SIZE" ]; then
+    log_error "Tổng dung lượng các file image ($TOTAL_DYNAMIC_SIZE bytes) lớn hơn giới hạn Super ($GROUP_SIZE bytes)!"
 fi
 
 log_info "Tổng dung lượng Dynamic images: $TOTAL_DYNAMIC_SIZE bytes (~$((TOTAL_DYNAMIC_SIZE/1024/1024)) MB)"
 log_info "Group size thiết lập: $GROUP_SIZE bytes"
 log_info "Super size thiết lập: $SUPER_SIZE bytes"
+
+tg_notify "🔨 <b>[Bước 4/5] Đang đóng gói super.img</b>...%0A📊 <b>Tổng size phân vùng:</b> ~$((TOTAL_DYNAMIC_SIZE/1024/1024)) MB%0A💾 <b>Super Size đích:</b> ~$((SUPER_SIZE/1024/1024)) MB"
 
 if ! command -v lpmake >/dev/null 2>&1; then
     log_error "Không tìm thấy công cụ 'lpmake' trong PATH!"
@@ -158,7 +188,8 @@ lpmake \
     --sparse \
     --output "$OUT_DIR/images/super.img"
 
-log_success "Đã tạo thành công super.img dạng sparse tại: $OUT_DIR/images/super.img"
+SUPER_IMG_SIZE=$(ls -lh "$OUT_DIR/images/super.img" | awk '{print $5}')
+log_success "Đã tạo thành công super.img dạng sparse ($SUPER_IMG_SIZE) tại: $OUT_DIR/images/super.img"
 
 # 6. Tạo script flash tự động cho Windows (.bat) và Linux (.sh)
 log_info "Đang tạo script flash (flash_all.bat & flash_all.sh)..."
@@ -255,4 +286,5 @@ exit /b 0
 EOF
 
 log_success "Đã tạo đầy đủ trọn bộ Fastboot ROM tại: $OUT_DIR"
+tg_notify "✅ <b>[Bước 5/5] Hoàn thành tạo super.img ($SUPER_IMG_SIZE)</b> và các script flash! Đang chuyển sang đóng gói phát hành..."
 ls -lh "$OUT_DIR/images"
